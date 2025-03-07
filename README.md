@@ -1,2 +1,5 @@
-# env6annotated
-An annotated viewer for the Sixth Basic Environmental Plan, utilizing LLM-based judgment analysis to assess policy responses and public engagement.
+[NLP2025ワークショップ：LLM時代のことばの評価の現在と未来](https://sites.google.com/view/nlp2025ws-langeval/home) で <em>亀田 尭宙 (人間文化研究機構), 石井 康平(千葉大): 大規模言語モデルを活用したパブリックコメントの反映可視化と課題分析</em> として発表する内容のデモ、データ、発表資料含んだリポジトリです。
+
+## 発表概要
+
+本研究では、環境基本計画の原文に対するパブリックコメントの影響を可視化した。具体的には、コメントとその応答から、原文のどの部分が変更されたか、または変更されなかったかを判別し、対応箇所や関連箇所を特定するために大規模言語モデル（LLM）を活用した。これにより、柔軟な判定が可能になったが、対応の妥当性の評価には課題が残った。
