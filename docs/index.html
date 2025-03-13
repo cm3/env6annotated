@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stand-off Annotation</title>
+    <style>
+        body {
+            display: flex;
+            font-family: Arial, sans-serif;
+        }
+        p{
+            text-indent: 1em;
+            margin: 0; /* デフォルトの段落間の余白をなくす */
+            padding: 0;
+            line-height: 1.6; /* 行間は適度に */
+        }
+        hr.break {
+            border: none;
+            height: 1.5em; /* 空白を表現 */
+            background: none;
+        }
+        #content {
+            flex: 3;
+            padding: 20px;
+            position: relative;
+            margin-right: 350px;
+        }
+        #sidebar {
+            position: fixed;
+            right: 0;
+            top: 0;
+            width: 300px;  /* 必要に応じて調整 */
+            height: 100vh; /* 画面の高さいっぱいに */
+            overflow-y: auto; /* スクロール可能に */
+            padding: 20px;
+            border-left: 1px solid #ccc;
+            background: #f9f9f9;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+        }
+        .highlight {
+            position: relative;
+            cursor: pointer;
+        }
+        .comment, .reply{
+            display:none;
+        }
+        .marker {
+            font-size: 12px;
+            color: red;
+            font-weight: bold;
+            position: relative;
+            vertical-align: super;
+            cursor: pointer;
+        }
+        .controls {
+            margin-top: 10px;
+        }
+        .controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="content">
+        <h1>文書</h1>
+        <p id="para1">これはサンプルのテキストです。この部分にもアノテーションがあります。</p>
+    </div>
+
+    <div id="sidebar">
+        <!--
+        <div>
+            <label for="textInput">テキスト:</label>
+            <input type="file" id="textInput" accept=".html">
+        </div>
+        <div>
+            <label for="annotationInput">注釈:</label>
+            <input type="file" id="annotationInput" accept=".json">
+        </div>    
+        <button onclick="handleFileUpload()">読み込む</button>
+        -->  
+        <h2>注釈</h2>
+        <p id="annotationText"></p>
+        <div class="controls">
+            <button id="prev">◀</button>
+            <button id="next">▶</button>
+        </div>
+    </div>
+
+    <script>
+        let currentAnnotations = [];
+        let currentAnnotationIndex = 0;
+        let segmentColorsToRemind = new Map();
+
+        document.addEventListener("mouseup", function() {
+            let selection = window.getSelection();
+            if (!selection.rangeCount) return; // 選択範囲がなければ終了
+
+            let range = selection.getRangeAt(0); // 選択された範囲を取得
+            let parentP = range.startContainer; 
+
+            // `startContainer` がテキストノードの場合、親の <p> を取得
+            while (parentP && parentP.nodeType !== Node.ELEMENT_NODE) {
+                parentP = parentP.parentNode;
+            }
+
+            // <p> でなければ無視
+            if (!parentP || parentP.tagName !== "P") {
+                console.log("選択範囲に対応する <p> が見つかりません");
+                return;
+            }
+
+            let pId = parentP.id || "(IDなし)";
+
+            // 選択開始位置と終了位置を計算（`textContent` の中のオフセットを取得）
+            let startOffset = getTextOffset(parentP, range.startContainer, range.startOffset);
+            let endOffset = getTextOffset(parentP, range.endContainer, range.endOffset);
+
+            console.log(`選択範囲の <p> ID: ${pId}, start: ${startOffset}, end: ${endOffset}`);
+        });
+
+        /**
+         * 親ノード内でのオフセットを計算
+         */
+        function getTextOffset(parent, node, offset) {
+            let textNodes = [];
+            
+            function collectTextNodes(el) {
+                if (el.nodeType === Node.TEXT_NODE) {
+                    textNodes.push(el);
+                } else {
+                    for (let child of el.childNodes) {
+                        collectTextNodes(child);
+                    }
+                }
+            }
+
+            collectTextNodes(parent);
+
+            let totalOffset = 0;
+            for (let textNode of textNodes) {
+                if (textNode === node) {
+                    return totalOffset + offset;
+                }
+                totalOffset += textNode.textContent.length;
+            }
+            return totalOffset;
+        }
+
+        async function loadText() {
+            try {
+                const response = await fetch(`env6part_nlp.html?timestamp=${new Date().getTime()}`, { cache: "no-store" });
+                if (!response.ok) throw new Error("テキストの読み込みに失敗しました");
+                const text = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, "text/html");
+                document.getElementById("content").innerHTML = doc.body.innerHTML;
+                await loadAnnotations();
+                console.log("Fetched HTML:", document.getElementById("content").innerHTML);
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
+        async function loadAnnotations() {
+            const response = await fetch('annotations.json');
+            const rawAnnotations = await response.json();
+            const segments = transformAnnotations(rawAnnotations);
+            applyAnnotations(segments, rawAnnotations);
+        }
+
+        function transformAnnotations(data) {
+            let transformed = {}; // target ごとのデータを保存するオブジェクト
+
+            // target ごとに整理
+            let groupedByTarget = {};
+            data.forEach(annotation => {
+                if (!groupedByTarget[annotation.target]) {
+                    groupedByTarget[annotation.target] = [];
+                }
+                groupedByTarget[annotation.target].push(annotation);
+            });
+
+            // 各 target ごとに処理
+            Object.keys(groupedByTarget).forEach(target => {
+                let annotations = groupedByTarget[target];
+                let segments = [];
+                let points = new Set();
+
+                // 各アノテーションの開始・終了位置をセットに追加
+                annotations.forEach(({ start, end }) => {
+                    points.add(start);
+                    points.add(end);
+                });
+
+                // 境界をソート
+                let sortedPoints = [...points].sort((a, b) => a - b);
+
+                for (let i = 0; i < sortedPoints.length - 1; i++) {
+                    let segStart = sortedPoints[i];
+                    let segEnd = sortedPoints[i + 1];
+                    let appliedAnnotations = [];
+
+                    // 現在の範囲に該当するアノテーションを取得
+                    annotations.forEach(({ start, end, id }) => {
+                        if (segStart >= start && segEnd <= end) {
+                            appliedAnnotations.push(id);
+                        }
+                    });
+
+                    // 適用可能なアノテーションがある場合のみ追加
+                    if (appliedAnnotations.length > 0) {
+                        segments.push({
+                            id: `seg_${target}_${segments.length + 1}`, // target ごとに一意な ID を生成
+                            start: segStart,
+                            end: segEnd,
+                            annotations: appliedAnnotations
+                        });
+                    }
+                }
+
+                // 整理したデータを保存
+                transformed[target] = segments;
+            });
+
+            return transformed;
+        }
+
+        function applyAnnotations(segments, originalAnnotations) {
+            Object.keys(segments).forEach(target => {
+                const para = document.getElementById(target);
+                if (!para) {
+                    console.warn(`ターゲット ID "${target}" の段落が見つかりませんでした。`);
+                    return;
+                }
+
+                let text = para.textContent;
+                let modifiedText = "";
+                let offset = 0;
+                let markerMap = {};
+
+                // マーカー（脚注記号）の位置を記録
+                originalAnnotations.forEach(({ id, target, end }) => {
+                    if (!markerMap[target]) {
+                        markerMap[target] = {};
+                    }
+                    if (!markerMap[target][end]) {
+                        markerMap[target][end] = [];
+                    }
+                    markerMap[target][end].push(id);
+                });
+
+                segments[target].forEach(({ start, end, annotations }) => {
+                    // `start` の前の部分を追加
+                    let before = text.slice(offset, start);
+
+                    // アノテーションの適用
+                    let segmentText = text.slice(start, end);
+                    let bgColor = `rgba(255, 255, 0, ${0.3 + 0.3 * annotations.length})`;
+                    let markers = (markerMap[target][end] || []).map(id => 
+                        `<span class='marker' data-id='${id}'>[${id}]</span>`
+                    ).join("");
+
+                    modifiedText += before + `<span class='highlight' data-ids='${annotations.join(",")}' style='background-color: ${bgColor}'>${segmentText}</span>` + markers;
+                    offset = end; // 更新
+                });
+
+                // 残りのテキストを追加
+                modifiedText += text.slice(offset);
+
+                // HTML に適用
+                para.innerHTML = modifiedText;
+            });
+
+            addEventListeners(segments, originalAnnotations);
+        }
+
+        function addEventListeners(segments, originalAnnotations) {
+            document.querySelectorAll(".marker, .highlight").forEach(element => {
+                element.addEventListener("click", () => {
+                    restoreSegmentColors();
+                    let annotationIds = element.getAttribute("data-ids")?.split(",") || [element.getAttribute("data-id")];
+                    currentAnnotations = originalAnnotations.filter(a => annotationIds.includes(String(a.id)));
+                    currentAnnotationIndex = 0;
+                    showCurrentAnnotation();
+                });
+            });
+            document.getElementById("prev").addEventListener("click", () => {
+                if (currentAnnotations.length > 0) {
+                    currentAnnotationIndex = (currentAnnotationIndex - 1 + currentAnnotations.length) % currentAnnotations.length;
+                    showCurrentAnnotation();
+                }
+            });
+            document.getElementById("next").addEventListener("click", () => {
+                if (currentAnnotations.length > 0) {
+                    currentAnnotationIndex = (currentAnnotationIndex + 1) % currentAnnotations.length;
+                    showCurrentAnnotation();
+                }
+            });
+        }
+
+        function showCurrentAnnotation() {
+            if (currentAnnotations.length > 0) {
+                let annotation = currentAnnotations[currentAnnotationIndex];
+                let annotationContainer = document.getElementById("annotationText"); // 適切なIDに変更
+                annotationContainer.innerHTML = ""; // 既存の内容をクリア
+
+                if (typeof annotation.annotation === 'string') {
+                    annotationContainer.innerHTML = `<p>${annotation.annotation}</p>`;
+                } else if (typeof annotation.annotation === 'object') {
+                    Object.keys(annotation.annotation).forEach(key => {
+                        let className = key.replace(/[^a-zA-Z0-9_-]/g, '');
+                        annotationContainer.innerHTML += `<p class="${className}">${annotation.annotation[key]}</p>`;
+                    });
+                }
+
+                document.getElementById("sidebar").style.display = "block";
+            }
+            updateNavigationButtons();
+            highlightCurrentSegment();
+        }
+
+        function updateNavigationButtons() {
+            document.getElementById("prev").disabled = currentAnnotations.length <= 1 || currentAnnotationIndex === 0;
+            document.getElementById("next").disabled = currentAnnotations.length <= 1 || currentAnnotationIndex === currentAnnotations.length - 1;
+        }
+
+        function highlightCurrentSegment() {
+            restoreSegmentColors();
+            if (currentAnnotations.length > 0) {
+                let currentAnnotation = currentAnnotations[currentAnnotationIndex];
+                document.querySelectorAll(`.highlight[data-ids*='${currentAnnotation.id}']`).forEach(el => {
+                    segmentColorsToRemind.set(el, el.style.backgroundColor);
+                    el.style.backgroundColor = "rgba(173, 216, 230, 0.6)";
+                });
+            }
+        }
+
+        function restoreSegmentColors() {
+            segmentColorsToRemind.forEach((color, element) => {
+                element.style.backgroundColor = color;
+            });
+            segmentColorsToRemind.clear();
+        }
+
+        loadText();
+    </script>
+
+</body>
+</html>
